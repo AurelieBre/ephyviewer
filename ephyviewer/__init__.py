@@ -11,7 +11,7 @@ from .navigation import NavigationToolBar
 
 
 #Viewers
-from .traceviewer import TraceViewer
+from .traceviewer import TraceViewer, TraceViewer_Annotate
 from .videoviewer import VideoViewer
 from .eventlist import EventList
 from .epochviewer import EpochViewer
@@ -22,4 +22,4 @@ from .spiketrainviewer import SpikeTrainViewer
 
 
 #Encoders
-from .epochencoder import EpochEncoder
+from .epochencoder import EpochEncoder, EpochEncoder_ABC

@@ -3,9 +3,10 @@
 
 
 import numpy as np
-
+import pandas as pd
 #~ import matplotlib.cm
 #~ import matplotlib.colors
+import os
 
 from .myqt import QT
 import pyqtgraph as pg
@@ -34,7 +35,7 @@ default_params = [
         'limits':['real_scale', 'same_for_all', 'by_channel'] },
     {'name': 'auto_scale_factor', 'type': 'float', 'value': 0.1, 'step': 0.01, 'limits': (0,np.inf)},
     {'name': 'background_color', 'type': 'color', 'value': 'k'},
-    {'name': 'vline_color', 'type': 'color', 'value': '#FFFFFFAA'},
+    {'name': 'vline_color', 'type': 'color', 'value': "#000000AA"},
     {'name': 'label_fill_color', 'type': 'color', 'value': '#222222DD'},
     {'name': 'label_size', 'type': 'int', 'value': 8, 'limits': (1,np.inf)},
     {'name': 'display_labels', 'type': 'bool', 'value': False},
@@ -426,6 +427,7 @@ class TraceViewer(BaseMultiChannelViewer):
     request_data = QT.pyqtSignal(float, float, float, object, object, object, object)
 
     def __init__(self, useOpenGL=None, **kargs):
+        
         BaseMultiChannelViewer.__init__(self, **kargs)
 
         self.make_params()
@@ -442,6 +444,7 @@ class TraceViewer(BaseMultiChannelViewer):
         self.initialize_plot()
 
         self.last_sigs_chunk = None
+
 
         self.thread = QT.QThread(parent=self)
         self.datagrabber = DataGrabber(source=self.source, viewer=self)
@@ -514,8 +517,7 @@ class TraceViewer(BaseMultiChannelViewer):
         if self.source.with_scatter:
             self.scatter = pg.ScatterPlotItem(size=self.params['scatter_size'], pxMode = True)
             self.plot.addItem(self.scatter)
-
-
+          
 
         self.viewBox.xsize_zoom.connect(self.params_controller.apply_xsize_zoom)
         self.viewBox.ygain_zoom.connect(self.params_controller.apply_ygain_zoom)
@@ -644,5 +646,430 @@ class TraceViewer(BaseMultiChannelViewer):
         self.vline.setPos(self.t)
         self.plot.setXRange( t_start, t_stop, padding = 0.0)
         self.plot.setYRange(self.params['ylim_min'], self.params['ylim_max'], padding = 0.0)
+
+
+
+class TraceViewer_Annotate(BaseMultiChannelViewer):
+    _default_params = default_params
+    _default_by_channel_params = default_by_channel_params
+
+    _ControllerClass = TraceViewer_ParamController
+
+    request_data = QT.pyqtSignal(float, float, float, object, object, object, object)
+
+    def __init__(self,filename, useOpenGL=None, **kargs):
+        
+        self.filename = filename
+
+        BaseMultiChannelViewer.__init__(self, **kargs)
+
+        self.make_params()
+
+        # useOpenGL=True eliminates the extremely poor performance associated
+        # with TraceViewer's line_width > 1.0, but it also degrades overall
+        # performance somewhat and is reportedly unstable
+        self.set_layout(useOpenGL=useOpenGL)
+
+        self.make_param_controller()
+
+        self.viewBox.doubleclicked.connect(self.show_params_controller)
+
+        self.initialize_plot()
+
+        self.last_sigs_chunk = None
+
+
+
+        #self.spikes_df = pd.DataFrame(columns=['time', 'duration', 'label'])
+        try:
+            self.spikes_df = pd.read_csv(filename)
+            assert all(c in self.spikes_df.columns for c in ['time', 'duration', 'label'])
+            #print(f"Loaded manually detected spikes from: {filename} ({len(self.spikes_df)} detected spikes)")
+        except Exception as e:
+            self.spikes_df = pd.DataFrame(columns=['time', 'duration', 'label'])
+
+
+        self.thread = QT.QThread(parent=self)
+        self.datagrabber = DataGrabber(source=self.source, viewer=self)
+        self.datagrabber.moveToThread(self.thread)
+        self.thread.start()
+
+
+        self.datagrabber.data_ready.connect(self.on_data_ready)
+        self.request_data.connect(self.datagrabber.on_request_data)
+
+        self.params.param('xsize').setLimits((0, np.inf))
+
+
+    @classmethod
+    def from_numpy(cls, sigs, sample_rate, t_start, name, channel_names=None,
+                scatter_indexes=None, scatter_channels=None, scatter_colors=None):
+
+        if scatter_indexes is None:
+            source = InMemoryAnalogSignalSource(sigs, sample_rate, t_start, channel_names=channel_names)
+        else:
+            source = AnalogSignalSourceWithScatter(sigs, sample_rate, t_start, channel_names=channel_names,
+                                            scatter_indexes=scatter_indexes, scatter_channels=scatter_channels, scatter_colors=scatter_colors)
+        view = cls(source=source, name=name)
+
+        return view
+
+    @classmethod
+    def from_neo_analogsignal(cls, neo_anasig, name):
+        source = NeoAnalogSignalSource(neo_anasig)
+        view = cls(source=source, name=name)
+        return view
+
+    def closeEvent(self, event):
+        event.accept()
+        self.thread.quit()
+        self.thread.wait()
+
+    def initialize_plot(self):
+
+        self.vline = pg.InfiniteLine(angle = 90, movable = False, pen = self.params['vline_color'])
+        self.vline.setZValue(1) # ensure vline is above plot elements
+        self.plot.addItem(self.vline)
+
+        self.curves = []
+        self.channel_labels = []
+        self.channel_offsets_line = []
+        for c in range(self.source.nb_channel):
+            color = self.by_channel_params['ch{}'.format(c), 'color']
+            curve = pg.PlotCurveItem(pen='#7FFF00', downsampleMethod='peak', downsample=1,
+                            autoDownsample=False, clipToView=True, antialias=False)#, connect='finite')
+            self.plot.addItem(curve)
+            self.curves.append(curve)
+
+            ch_name = '{}: {}'.format(c, self.source.get_channel_name(chan=c))
+            label = TraceLabelItem(text=ch_name, color=color, anchor=(0, 0.5), border=None, fill=self.params['label_fill_color'])
+            label.setZValue(2) # ensure labels are drawn above scatter
+            font = label.textItem.font()
+            font.setPointSize(self.params['label_size'])
+            label.setFont(font)
+            label.label_dragged.connect(lambda label_y, chan_index=c: self.params_controller.apply_label_drag(label_y, chan_index))
+            label.label_ygain_zoom.connect(lambda factor_ratio, chan_index=c: self.params_controller.apply_ygain_zoom(factor_ratio, chan_index))
+
+            self.plot.addItem(label)
+            self.channel_labels.append(label)
+
+            offset_line = pg.InfiniteLine(angle = 0, movable = False, pen = '#7FFF00')
+            self.plot.addItem(offset_line)
+            self.channel_offsets_line.append(offset_line)
+
+        if self.source.with_scatter:
+            self.scatter = pg.ScatterPlotItem(size=self.params['scatter_size'], pxMode = True)
+            self.plot.addItem(self.scatter)
+                        
+        # Red click marker
+        self.click_marker = pg.ScatterPlotItem(size=10, pxMode=True)
+        self.click_marker.setZValue(3)  # above everything else
+        self.plot.addItem(self.click_marker)
+
+        self.viewBox.xsize_zoom.connect(self.params_controller.apply_xsize_zoom)
+        self.viewBox.ygain_zoom.connect(self.params_controller.apply_ygain_zoom)
+
+        
+        self.plot.scene().sigMouseClicked.connect(self.on_mouse_clicked) # added by AB
+        
+        # Plot pre-existing spikes from spikes_df if already loaded
+        if hasattr(self, 'spikes_df') and not self.spikes_df.empty:
+            self._plot_existing_spikes()
+
+
+    def _plot_existing_spikes(self):
+        """Plot markers for all rows already in spikes_df.
+        Called at init and again after first data is ready (so y-positions are accurate)."""
+
+        if self.spikes_df.empty:
+            return
+
+        if not hasattr(self.params_controller, 'signals_med'):
+            # Data not loaded yet: plot everything at y=0, will be corrected on first refresh
+            xs = self.spikes_df['time'].values.astype(float)
+            ys = np.zeros(len(xs))
+            self.click_marker.setData(
+                x=xs, y=ys,
+                symbol='o',
+                brush=pg.mkBrush('#FF000080'),
+                pen=pg.mkPen('#FF000080'),
+            )
+            return
+
+        offsets     = self.params_controller.offsets
+        gains       = self.params_controller.gains
+        signals_med = self.params_controller.signals_med
+        scale_mode  = self.params['scale_mode']
+
+        xs, ys = [], []
+        for _, row in self.spikes_df.iterrows():
+            xs.append(row['time'])
+
+            if scale_mode == 'real_scale':
+                # No per-channel stacking: place marker at y=0
+                ys.append(0.0)
+            else:
+                # Find the channel whose name matches the label
+                match = [c for c in range(self.source.nb_channel)
+                        if self.source.get_channel_name(chan=c) == row['label']]
+                if match:
+                    c = match[0]
+                    ys.append(offsets[c] + signals_med[c] * gains[c])
+                else:
+                    ys.append(0.0)  # label not found, fallback
+
+        self.click_marker.setData(
+            x=np.array(xs),
+            y=np.array(ys),
+            symbol='o',
+            brush=pg.mkBrush('#FF000080'),
+            pen=pg.mkPen('#FF000080'),
+        )
+        #print(f"[TraceViewer] Plotted {len(xs)} pre-existing spike(s) from spikes_df.")
+
+
+    def on_mouse_clicked(self, event):
+        """On left-click: if clicking an existing marker remove it, otherwise add one."""
+        if event.double():
+            return
+        if event.button() != QT.LeftButton:
+            return
+
+        pos = event.scenePos()
+        if not self.plot.sceneBoundingRect().contains(pos):
+            return
+
+        mouse_point = self.viewBox.mapSceneToView(pos)
+        clicked_t = mouse_point.x()
+        clicked_y = mouse_point.y()
+
+        scale_mode = self.params['scale_mode']
+        visibles = np.where(self.params_controller.visible_channels)[0]
+        if len(visibles) == 0:
+            return
+
+        if not hasattr(self.params_controller, 'signals_med'):
+            self.params_controller.estimate_median_mad()
+
+        offsets     = self.params_controller.offsets
+        gains       = self.params_controller.gains
+        signals_med = self.params_controller.signals_med
+
+        if scale_mode == 'real_scale':
+            nearest_idx  = visibles[0]
+            marker_y     = clicked_y
+            channel_name = "N/A (real_scale – channels share y-axis)"
+        else:
+            centers      = offsets[visibles] + signals_med[visibles] * gains[visibles]
+            best         = np.argmin(np.abs(centers - clicked_y))
+            nearest_idx  = visibles[best]
+            marker_y     = centers[best]
+            channel_name = self.source.get_channel_name(chan=nearest_idx)
+
+        clicked_t_rounded = np.round(clicked_t, 2)
+
+        # Tolerance for "close enough", expressed as a fraction of visible ranges
+        x_tol = self.params['xsize'] * 0.01   # 1% of visible time window
+        y_range = self.params['ylim_max'] - self.params['ylim_min']
+        y_tol = y_range * 0.01                # 5% of visible y range
+
+        if not self.spikes_df.empty:
+            # Find the closest existing marker point in plot space
+            existing_x, existing_y = self.click_marker.getData()
+            close_marker_idx = None
+            if existing_x is not None and len(existing_x) > 0:
+                within = (
+                    (np.abs(existing_x - clicked_t) <= x_tol) &
+                    (np.abs(existing_y - marker_y)  <= y_tol)
+                )
+                if within.any():
+                    # Pick the closest one among candidates
+                    distances = np.sqrt(
+                        ((existing_x - clicked_t) / x_tol) ** 2 +   # normalised
+                        ((existing_y - marker_y)  / y_tol) ** 2
+                    )
+                    distances[~within] = np.inf
+                    close_marker_idx = np.argmin(distances)
+
+            if close_marker_idx is not None:
+                # ── REMOVE mode ──────────────────────────────────────────────
+                # Match the df row whose time and label are closest to the click
+                match_mask = (
+                    (np.abs(self.spikes_df['time']  - clicked_t_rounded) <= x_tol) &
+                    (self.spikes_df['label'] == channel_name)
+                )
+                self.spikes_df = self.spikes_df[~match_mask].reset_index(drop=True)
+
+                xs = np.delete(existing_x, close_marker_idx)
+                ys = np.delete(existing_y, close_marker_idx)
+                self.click_marker.setData(
+                    x=xs, y=ys,
+                    symbol='o',
+                    brush=pg.mkBrush('#FF000080'),
+                    pen=pg.mkPen('#FF000080'),
+                )
+                return  # stop here, do NOT add a new marker
+        
+        # ── ADD mode ─────────────────────────────────────────────────────────
+        new_row = pd.DataFrame([{
+            'time':     clicked_t_rounded,
+            'duration': 0.01,
+            'label':    channel_name,
+        }])
+
+        if self.spikes_df.empty:
+            self.spikes_df = new_row.copy()
+        else:
+            self.spikes_df = pd.concat([self.spikes_df, new_row], ignore_index=True)
+
+        existing_x, existing_y = self.click_marker.getData()
+        if existing_x is not None and len(existing_x) > 0:
+            xs = np.append(existing_x, clicked_t)
+            ys = np.append(existing_y, marker_y)
+        else:
+            xs = np.array([clicked_t])
+            ys = np.array([marker_y])
+
+        self.click_marker.setData(
+            x=xs, y=ys,
+            symbol='o',
+            brush=pg.mkBrush('#FF000080'),
+            pen=pg.mkPen('#FF000080'),
+        )
+
+        self.spikes_df = self.spikes_df.sort_values('time').reset_index(drop=True)
+        self.spikes_df.to_csv(self.filename, index=False)
+
+
+    def on_param_change(self, params=None, changes=None):
+        #~ print('on_param_change')
+        #track if new scale mode
+        for param, change, data in changes:
+            if change != 'value': continue
+            if param.name()=='scale_mode':
+                self.params_controller.compute_rescale()
+            if param.name()=='antialias':
+                for curve in self.curves:
+                    curve.updateData(antialias=self.params['antialias'])
+            if param.name()=='scatter_size':
+                if self.source.with_scatter:
+                    self.scatter.setSize(self.params['scatter_size'])
+            if param.name()=='vline_color':
+                self.vline.setPen(self.params['vline_color'])
+            if param.name()=='label_fill_color':
+                for label in self.channel_labels:
+                    label.fill = pg.mkBrush(self.params['label_fill_color'])
+            if param.name()=='label_size':
+                for label in self.channel_labels:
+                    font = label.textItem.font()
+                    font.setPointSize(self.params['label_size'])
+                    label.setFont(font)
+
+
+        self.refresh()
+
+    def auto_scale(self):
+        #~ print('auto_scale', self.last_sigs_chunk)
+        if self.last_sigs_chunk is None:
+            xsize = self.params['xsize']
+            xratio = self.params['xratio']
+            t_start, t_stop = self.t-xsize*xratio , self.t+xsize*(1-xratio)
+            visibles, = np.nonzero(self.params_controller.visible_channels)
+            total_gains = self.params_controller.total_gains
+            total_offsets = self.params_controller.total_offsets
+            _, _, _, _, _, _,sigs_chunk, _ = self.datagrabber.get_data(self.t, t_start, t_stop, total_gains,
+                                            total_offsets, visibles, self.params['decimation_method'])
+            self.last_sigs_chunk = sigs_chunk
+
+        self.params_controller.compute_rescale()
+        self.refresh()
+
+    def refresh(self):
+        #~ print('TraceViewer.refresh', 't', self.t)
+        xsize = self.params['xsize']
+        xratio = self.params['xratio']
+        t_start, t_stop = self.t-xsize*xratio , self.t+xsize*(1-xratio)
+        visibles, = np.nonzero(self.params_controller.visible_channels)
+        total_gains = self.params_controller.total_gains
+        total_offsets = self.params_controller.total_offsets
+
+        self.request_data.emit(self.t, t_start, t_stop, total_gains, total_offsets, visibles, self.params['decimation_method'])
+
+
+    def on_data_ready(self, t,   t_start, t_stop, visibles, dict_curves, times_curves, sigs_chunk, dict_scatter):
+        #~ print('on_data_ready', t, t_start, t_stop)
+
+        if self.t != t:
+            #~ print('on_data_ready not same t')
+            return
+
+        self.graphicsview.setBackground(self.params['background_color'])
+
+        self.last_sigs_chunk = sigs_chunk
+
+        offsets = self.params_controller.offsets
+        gains = self.params_controller.gains
+        if not hasattr(self.params_controller, 'signals_med'):
+            self.params_controller.estimate_median_mad()
+        signals_med = self.params_controller.signals_med
+
+
+        for i, c in enumerate(visibles):
+            self.curves[c].show()
+            self.curves[c].setData(times_curves, dict_curves[c])
+
+            color = self.by_channel_params['ch{}'.format(c), 'color']
+            self.curves[c].setPen(color, width=self.params['line_width'])
+
+            if self.params['display_labels']:
+                self.channel_labels[c].show()
+                self.channel_labels[c].setPos(t_start, offsets[c] + signals_med[c]*gains[c])
+                self.channel_labels[c].setColor(color)
+            else:
+                self.channel_labels[c].hide()
+
+            if self.params['display_offset']:
+                self.channel_offsets_line[c].show()
+                self.channel_offsets_line[c].setPos(offsets[c])
+                self.channel_offsets_line[c].setPen(color)
+            else:
+                self.channel_offsets_line[c].hide()
+
+        for c in range(self.source.nb_channel):
+            if c not in visibles:
+                self.curves[c].hide()
+                self.channel_labels[c].hide()
+                self.channel_offsets_line[c].hide()
+
+        if dict_scatter is not None:
+            self.scatter.clear()
+            all_x = []
+            all_y = []
+            all_brush = []
+            for k, (x, y) in dict_scatter.items():
+                all_x.append(x)
+                all_y.append(y)
+
+                # here we must use cached brushes to avoid issues with
+                # the SymbolAtlas in pyqtgraph >= 0.11.1.
+                # see https://github.com/NeuralEnsemble/ephyviewer/issues/132
+                color = self.source.scatter_colors.get(k, '#FFFFFF')
+                all_brush.append(np.array([mkCachedBrush(color)]*len(x)))
+
+            if len(all_x):
+                all_x = np.concatenate(all_x)
+                all_y = np.concatenate(all_y)
+                all_brush = np.concatenate(all_brush)
+                self.scatter.setData(x=all_x, y=all_y, brush=all_brush)
+
+        self.vline.setPos(self.t)
+        self.plot.setXRange( t_start, t_stop, padding = 0.0)
+        self.plot.setYRange(self.params['ylim_min'], self.params['ylim_max'], padding = 0.0)
+
+
+        # Re-plot pre-existing spikes now that signals_med is available
+        if not self.spikes_df.empty:
+            self._plot_existing_spikes()
+        self.vline.setPos(self.t)
 
         #~ self.graphicsview.repaint()

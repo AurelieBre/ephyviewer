@@ -127,10 +127,10 @@ class NavigationToolBar(QT.QWidget) :
                 {'key': QT.Qt.Key_Right, 'callback': self.next_step},
                 {'key': QT.Qt.Key_Up,    'callback': self.increase_step},
                 {'key': QT.Qt.Key_Down,  'callback': self.decrease_step},
-                {'key': 'a',             'callback': self.prev_step},
-                {'key': 'd',             'callback': self.next_step},
-                {'key': 'w',             'callback': self.increase_step},
-                {'key': 's',             'callback': self.decrease_step},
+                #{'key': 'a',             'callback': self.prev_step},
+                #{'key': 'd',             'callback': self.next_step},
+                #{'key': 'w',             'callback': self.increase_step},
+                #{'key': 's',             'callback': self.decrease_step},
             ]
             for s in shortcuts:
                 shortcut = QT.QShortcut(self)
