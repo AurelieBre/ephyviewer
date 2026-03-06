@@ -19,6 +19,7 @@ from .timefreqviewer import TimeFreqViewer
 from .spectrogramviewer import SpectrogramViewer
 from .dataframeview import DataFrameView
 from .spiketrainviewer import SpikeTrainViewer
+from .cluster_selection_toolbar import ClusterSelectionToolbar 
 
 
 #Encoders
