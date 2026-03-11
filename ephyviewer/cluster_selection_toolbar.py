@@ -8,7 +8,7 @@ import os
 
 
 class ClusterSelectionToolbar(QT.QWidget):
-    
+    """
     BUTTON_COLORS = {
         1: ('#9B59B6', 'purple'),
         2: ('#3498DB', 'blue'),
@@ -17,13 +17,23 @@ class ClusterSelectionToolbar(QT.QWidget):
         5: ('#E74C3C', 'red')
     }
     
-    def __init__(self, channel_names, save_file='cluster_selection.json', parent=None):
+    BUTTON_COLORS = {
+        1: ("#8000ffff", 'purple'),
+        2: ("#00b4ebff", 'blue'),
+        3: ("#80ffb5ff", 'green'),
+        4: ("#ffb260ff", 'orange'),
+        5: ("#ff0000ff", 'red')
+    }
+    """
+    def __init__(self, channel_names, nb_clusters, button_colors, save_file='cluster_selection.json', parent=None):
         super().__init__(parent)
         
         self.channel_names = list(channel_names)  # Ensure it's a list
         self.save_file = str(save_file)  # Ensure it's a string
         self.button_states = {}
         self.all_buttons = {}
+        self.button_colors= button_colors
+        self.nb_clusters=nb_clusters
         
         """Load button states from JSON file"""
         
@@ -92,7 +102,7 @@ class ClusterSelectionToolbar(QT.QWidget):
         
         self.all_buttons[ch_name] = {}
         
-        for btn_num in range(1, 6):
+        for btn_num in range(1, self.nb_clusters+1):
             btn = self._create_cluster_button(ch_name, btn_num)
             btn_row.addWidget(btn)
             self.all_buttons[ch_name][btn_num] = btn
@@ -115,14 +125,15 @@ class ClusterSelectionToolbar(QT.QWidget):
         btn.setCheckable(True)
         
         # Get saved state for this channel and button
-        saved_state = self.button_states.get(ch_name, {}).get(f'{btn_num}', True)
+        saved_state = self.button_states.get(ch_name, {}).get(f'{btn_num}', False)
                 
         # Block signals while setting initial state
         btn.blockSignals(True)
         btn.setChecked(saved_state)
         btn.blockSignals(False)
         
-        color_hex, _ = self.BUTTON_COLORS[btn_num]
+        #color_hex, _ = self.button_colors[btn_num]
+        color_hex = self.button_colors[btn_num]
         
         # Apply style
         self._update_button_style(btn, color_hex, saved_state)
@@ -169,7 +180,7 @@ class ClusterSelectionToolbar(QT.QWidget):
     def _initialize_states(self):
         """Initialize default button states"""
         for ch_name in self.channel_names:
-            self.button_states[ch_name] = {1: True, 2: True, 3: True, 4: True, 5: True}
+            self.button_states[ch_name] = dict.fromkeys(range(1, self.nb_clusters+1), False) #{1: False, 2: False, 3: False, 4: False, 5: False}
     
     def _save_states(self):
         """Save button states to JSON file"""

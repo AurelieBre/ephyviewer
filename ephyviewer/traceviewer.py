@@ -684,7 +684,7 @@ class TraceViewer_Annotate(BaseMultiChannelViewer):
         try:
             self.spikes_df = pd.read_csv(filename)
             assert all(c in self.spikes_df.columns for c in ['time', 'duration', 'label'])
-            #print(f"Loaded manually detected spikes from: {filename} ({len(self.spikes_df)} detected spikes)")
+            print(f"Loaded manually detected spikes from: {filename} ({len(self.spikes_df)} detected spikes)")
         except Exception as e:
             self.spikes_df = pd.DataFrame(columns=['time', 'duration', 'label'])
 
@@ -908,6 +908,8 @@ class TraceViewer_Annotate(BaseMultiChannelViewer):
                     brush=pg.mkBrush('#FF000080'),
                     pen=pg.mkPen('#FF000080'),
                 )
+                self.spikes_df = self.spikes_df.sort_values('time').reset_index(drop=True)
+                self.spikes_df.to_csv(self.filename, index=False)
                 return  # stop here, do NOT add a new marker
         
         # ── ADD mode ─────────────────────────────────────────────────────────
